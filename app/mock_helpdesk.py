@@ -3,10 +3,11 @@
 import asyncio
 import random
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 
 from app import db, settings
+from app.auth import operator_auth
 
 router = APIRouter(prefix="/mock-helpdesk", tags=["mock helpdesk"])
 
@@ -35,7 +36,8 @@ async def create_reply(ticket_id: str, reply: Reply, idempotency_key: str | None
     return {"status": "created"}
 
 
-@router.get("/replies")
+# Customer replies: behind the operator password like the rest of the UI.
+@router.get("/replies", dependencies=[Depends(operator_auth)])
 async def list_replies():
     async with db.pool.connection() as conn:
         cur = await conn.execute("SELECT * FROM mock_replies ORDER BY id DESC LIMIT 200")

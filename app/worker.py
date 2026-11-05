@@ -46,12 +46,24 @@ async def generate(ticket: dict) -> None:
 
 
 async def send(ticket: dict, http: httpx.AsyncClient) -> None:
-    # The key is stable across retries, so a retry after a timeout that actually landed is not shown twice.
-    response = await http.post(
-        ticket["reply_url"],
-        json={"ticket_id": ticket["ticket_id"], "message": ticket["draft"]},
-        headers={"Idempotency-Key": f"reply-{ticket['id']}"},
-    )
+    try:
+        # The key is stable across resends: a helpdesk that honours it drops the duplicate itself.
+        response = await http.post(
+            ticket["reply_url"],
+            json={"ticket_id": ticket["ticket_id"], "message": ticket["draft"]},
+            headers={"Idempotency-Key": f"reply-{ticket['id']}"},
+        )
+    except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout):
+        raise  # the request never left: safe to retry
+    except httpx.TransportError as e:
+        # Sent but no answer (timeout, dropped connection): it may have landed. An automatic resend could
+        # show the customer the reply twice, so an operator checks the helpdesk and decides.
+        await execute(
+            "UPDATE tickets SET status = 'unconfirmed', last_error = %s, locked_until = NULL, updated_at = now() "
+            "WHERE id = %s AND status = 'approved'",
+            [repr(e)[:1000], ticket["id"]],
+        )
+        return
     if not response.is_success:
         raise RuntimeError(f"helpdesk answered {response.status_code}")
     await execute(

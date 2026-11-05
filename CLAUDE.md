@@ -4,7 +4,8 @@ Helpdesk webhook → Postgres → worker drafts a reply with Claude using the KB
 Product requirements and the decisions behind them are in README.md ("Вимоги та рішення"). Keep that table in sync when behaviour changes.
 
 ## Layout
-- `app/main.py` — FastAPI: webhook, `/health`, operator UI, KB pages
+- `app/main.py` — FastAPI: webhook, `/health`, operator UI and its status transitions, KB pages
+- `app/auth.py` — operator password (HTTP Basic)
 - `app/worker.py` — queue loop: claim → generate or send → retry with backoff
 - `app/llm.py` — Claude call, global rate limiter, no-key mode
 - `app/kb.py` + `kb/*.md` — knowledge base and search
@@ -18,6 +19,9 @@ Product requirements and the decisions behind them are in README.md ("Вимог
 - Every LLM request goes through `llm.acquire_slot()`. Keep SDK `max_retries=0` so retries are counted too.
 - Without `ANTHROPIC_API_KEY` the real request is still sent; only the answer is replaced by `STATIC_REPLY` after 5–30 s.
 - Sends carry `Idempotency-Key: reply-<tickets.id>`; it must stay stable across retries.
+- A send that may have landed (timeout, dropped connection after the request left) is never resent automatically: it goes to `unconfirmed` and the operator decides. Only "never connected" errors and 5xx are retried.
+- `reply_url` host must be in `settings.REPLY_URL_HOSTS` (checked in the webhook). Don't make the HTTP client follow redirects.
+- Everything that shows customer data (operator UI, mock reply list) is behind `auth.operator_auth`.
 - Queue state lives only in Postgres (leases via `locked_until`). No in-process queues.
 
 ## Conventions

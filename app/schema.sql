@@ -1,5 +1,6 @@
 -- One row per helpdesk event. The table is also the job queue for the worker:
 --   new -> draft (LLM done) -> approved (operator) -> sent (helpdesk 2xx)
+--   approved -> unconfirmed (sent, no answer) -> sent | approved (operator checked the helpdesk)
 --   draft -> rejected;  new/approved -> failed after MAX_ATTEMPTS
 -- A job is claimed by setting locked_until (a lease); a crashed worker's lease expires and the job is retried.
 CREATE TABLE IF NOT EXISTS tickets (

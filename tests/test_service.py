@@ -15,7 +15,7 @@ EVENT = {
     "ticket_id": "T-1",
     "customer_email": "user@example.com",
     "message": "Не можу експортувати звіт у PDF",
-    "reply_url": "http://test/mock-helpdesk/tickets/T-1/replies",
+    "reply_url": "http://app/mock-helpdesk/tickets/T-1/replies",
 }
 
 
@@ -124,3 +124,55 @@ async def test_refused_or_empty_reply_is_retried_not_saved(clean, monkeypatch, s
     assert ticket["status"] == "new" and ticket["draft"] is None
     assert ticket["last_error"] and ticket["locked_until"] is None
     assert ticket["next_attempt_at"] > ticket["created_at"]
+
+
+async def test_webhook_rejects_reply_url_outside_the_helpdesk(clean):
+    async with client() as c:
+        r = await c.post("/webhooks/helpdesk", json={**EVENT, "reply_url": "http://169.254.169.254/latest"})
+    assert r.status_code == 422
+    assert await fetchall("SELECT id FROM tickets") == []
+
+
+async def approved_ticket() -> dict:
+    async with client() as c:
+        await c.post("/webhooks/helpdesk", json=EVENT)
+    async with db.pool.connection() as conn:
+        await conn.execute("UPDATE tickets SET status = 'approved', draft = 'Відповідь'")
+    return await worker.claim()
+
+
+def helpdesk_raising(error: type[httpx.TransportError], requests: list) -> httpx.AsyncClient:
+    def handler(request):
+        requests.append(request)
+        raise error("simulated", request=request)
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+async def test_send_timeout_waits_for_the_operator_instead_of_resending(clean):
+    requests = []
+    async with helpdesk_raising(httpx.ReadTimeout, requests) as http:
+        await worker.handle(await approved_ticket(), http)
+    [ticket] = await fetchall("SELECT * FROM tickets")
+    assert ticket["status"] == "unconfirmed" and len(requests) == 1
+    assert await worker.claim() is None  # not picked up again automatically
+
+    async with client() as c:
+        await c.post(f"/tickets/{ticket['id']}/resend")
+    assert (await worker.claim())["status"] == "approved"
+
+
+async def test_send_that_never_connected_is_retried(clean):
+    requests = []
+    async with helpdesk_raising(httpx.ConnectError, requests) as http:
+        await worker.handle(await approved_ticket(), http)
+    [ticket] = await fetchall("SELECT * FROM tickets")
+    assert ticket["status"] == "approved" and ticket["next_attempt_at"] > ticket["created_at"]
+    assert "ConnectError" in ticket["last_error"]
+
+
+async def test_mock_reply_list_needs_the_operator_password(clean, monkeypatch):
+    monkeypatch.setattr(settings, "OPERATOR_PASSWORD", "secret")
+    async with client() as c:
+        assert (await c.get("/mock-helpdesk/replies")).status_code == 401
+        assert (await c.get("/", auth=("op", "secret"))).status_code != 401
+        assert (await c.get("/mock-helpdesk/replies", auth=("op", "secret"))).status_code == 200

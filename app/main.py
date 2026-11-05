@@ -1,27 +1,26 @@
-import secrets
 from contextlib import asynccontextmanager
 from html import escape
 from pathlib import Path
+from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, field_validator
 
 from app import db, kb, mock_helpdesk, settings
+from app.auth import operator_auth
 
 templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
-basic = HTTPBasic(auto_error=False)
 
-
-def operator_auth(credentials: HTTPBasicCredentials | None = Depends(basic)) -> None:
-    if not settings.OPERATOR_PASSWORD:
-        return
-    if credentials is None or not secrets.compare_digest(
-        credentials.password.encode(), settings.OPERATOR_PASSWORD.encode()
-    ):
-        raise HTTPException(401, headers={"WWW-Authenticate": "Basic"})
+# Operator action -> (required current status, new status). Changing status only from the expected one
+# makes double clicks and two operators no-ops: a draft can be queued for sending only once.
+TRANSITIONS = {
+    "approve": ("draft", "approved"),
+    "reject": ("draft", "rejected"),
+    "resend": ("unconfirmed", "approved"),  # operator checked the helpdesk: the reply did not land
+    "delivered": ("unconfirmed", "sent"),  # operator checked the helpdesk: it did land
+}
 
 
 @asynccontextmanager
@@ -41,6 +40,14 @@ class HelpdeskEvent(BaseModel):
     customer_email: str = Field(min_length=3, max_length=320)
     message: str = Field(min_length=1, max_length=20_000)
     reply_url: HttpUrl
+
+    @field_validator("reply_url")
+    @classmethod
+    def known_helpdesk_host(cls, url: HttpUrl) -> HttpUrl:
+        # the worker POSTs here after approval; any host would let a forged webhook aim it at internal services
+        if url.host not in settings.REPLY_URL_HOSTS:
+            raise ValueError(f"reply_url host {url.host!r} is not in REPLY_URL_HOSTS")
+        return url
 
 
 @app.get("/health", response_class=PlainTextResponse)
@@ -68,30 +75,20 @@ async def operator_page(request: Request):
         # shortcut: last 200 tickets, no pagination or filters; add them when operators work through real volume
         cur = await conn.execute(
             "SELECT *, coalesce(locked_until > now(), false) AS busy FROM tickets "
-            "ORDER BY status = 'draft' DESC, id DESC LIMIT 200"
+            "ORDER BY status IN ('draft', 'unconfirmed') DESC, id DESC LIMIT 200"
         )
         tickets = await cur.fetchall()
     return templates.TemplateResponse(request, "operator.html", {"tickets": tickets})
 
 
-# Both transitions only fire from 'draft', so a double click or two operators cannot queue a second send.
-@app.post("/tickets/{ticket_id}/approve", dependencies=[Depends(operator_auth)])
-async def approve(ticket_id: int):
+@app.post("/tickets/{ticket_id}/{action}", dependencies=[Depends(operator_auth)])
+async def operator_action(ticket_id: int, action: Literal["approve", "reject", "resend", "delivered"]):
+    current, new = TRANSITIONS[action]
     async with db.pool.connection() as conn:
         await conn.execute(
-            "UPDATE tickets SET status = 'approved', attempts = 0, next_attempt_at = now(), updated_at = now() "
-            "WHERE id = %s AND status = 'draft'",
-            [ticket_id],
-        )
-    return RedirectResponse("/", status_code=303)
-
-
-@app.post("/tickets/{ticket_id}/reject", dependencies=[Depends(operator_auth)])
-async def reject(ticket_id: int):
-    async with db.pool.connection() as conn:
-        await conn.execute(
-            "UPDATE tickets SET status = 'rejected', updated_at = now() WHERE id = %s AND status = 'draft'",
-            [ticket_id],
+            "UPDATE tickets SET status = %s, attempts = 0, next_attempt_at = now(), updated_at = now() "
+            "WHERE id = %s AND status = %s",
+            [new, ticket_id, current],
         )
     return RedirectResponse("/", status_code=303)
 
