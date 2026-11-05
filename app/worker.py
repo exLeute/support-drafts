@@ -21,9 +21,21 @@ WHERE id = (
     LIMIT 1 FOR UPDATE SKIP LOCKED)
 RETURNING *"""
 
+# Every send attempt clears its lease when it ends, so an 'approved' ticket with an expired lease means a worker
+# died (or hung) during the POST. The reply may have landed: hand it to the operator instead of reclaiming it.
+STALE_SENDS = """
+UPDATE tickets SET status = 'unconfirmed', locked_until = NULL, updated_at = now(),
+       last_error = 'worker stopped during the send'
+WHERE status = 'approved' AND locked_until < now()"""
+
+
+class RetryableSend(Exception):
+    """The helpdesk certainly did not store the reply, so sending it again is safe."""
+
 
 async def claim() -> dict | None:
     async with db.pool.connection() as conn:
+        await conn.execute(STALE_SENDS)
         return await (await conn.execute(CLAIM)).fetchone()
 
 
@@ -53,17 +65,10 @@ async def send(ticket: dict, http: httpx.AsyncClient) -> None:
             json={"ticket_id": ticket["ticket_id"], "message": ticket["draft"]},
             headers={"Idempotency-Key": f"reply-{ticket['id']}"},
         )
-    except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout):
-        raise  # the request never left: safe to retry
-    except httpx.TransportError as e:
-        # Sent but no answer (timeout, dropped connection): it may have landed. An automatic resend could
-        # show the customer the reply twice, so an operator checks the helpdesk and decides.
-        await execute(
-            "UPDATE tickets SET status = 'unconfirmed', last_error = %s, locked_until = NULL, updated_at = now() "
-            "WHERE id = %s AND status = 'approved'",
-            [repr(e)[:1000], ticket["id"]],
-        )
-        return
+    except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as e:
+        raise RetryableSend(repr(e)) from e  # the request never left
+    if response.status_code >= 500 or response.status_code == 429:  # refused or failed before storing
+        raise RetryableSend(f"helpdesk answered {response.status_code}")
     if not response.is_success:
         raise RuntimeError(f"helpdesk answered {response.status_code}")
     await execute(
@@ -80,14 +85,23 @@ async def handle(ticket: dict, http: httpx.AsyncClient) -> None:
         else:
             await generate(ticket)
     except Exception as e:
-        give_up = ticket["attempts"] >= settings.MAX_ATTEMPTS
         log.warning("ticket %s attempt %s failed: %r", ticket["id"], ticket["attempts"], e)
+        if ticket["status"] == "approved" and not isinstance(e, RetryableSend):
+            # Anything else may have delivered the reply (timeout, dropped connection, 4xx, our DB failing after
+            # the POST). An automatic resend could show it twice, so an operator checks the helpdesk and decides.
+            await execute(
+                "UPDATE tickets SET status = 'unconfirmed', last_error = %s, locked_until = NULL, updated_at = now() "
+                "WHERE id = %s AND status = 'approved'",
+                [repr(e)[:1000], ticket["id"]],
+            )
+            return
+        give_up = ticket["attempts"] >= settings.MAX_ATTEMPTS
         await execute(
             """UPDATE tickets SET status = CASE WHEN %s THEN 'failed' ELSE status END,
                       last_error = %s, locked_until = NULL, updated_at = now(),
                       next_attempt_at = now() + make_interval(secs => %s)
-               WHERE id = %s AND status IN ('new', 'approved')""",
-            [give_up, repr(e)[:1000], min(5 * 2 ** ticket["attempts"], 600), ticket["id"]],
+               WHERE id = %s AND status = %s""",  # a stale worker must not touch a ticket that moved on
+            [give_up, repr(e)[:1000], min(5 * 2 ** ticket["attempts"], 600), ticket["id"], ticket["status"]],
         )
 
 

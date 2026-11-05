@@ -49,18 +49,25 @@ for _ in 1 2; do curl -s -o /dev/null "${AUTH[@]}" -X POST "$BASE/tickets/$id/ap
 [[ $(sql "SELECT status FROM tickets WHERE id = $id") =~ ^(approved|sent|unconfirmed)$ ]] || fail "approve did not work"
 ok "4 approved"
 
-# 5. delivered despite mock 503s; an unconfirmed send is resent by "the operator"
+# 5. delivered despite mock 503s; an unconfirmed send is resolved the way an operator would:
+#    look at the helpdesk first, resend only if the reply is not there
 for _ in 1 2 3; do
   wait_status 180 sent unconfirmed
   [[ $s == sent ]] && break
-  echo "     unconfirmed (mock answered late), resending as the operator would"
-  curl -s -o /dev/null "${AUTH[@]}" -X POST "$BASE/tickets/$id/resend"
+  if [[ $(sql "SELECT count(*) FROM mock_replies WHERE idempotency_key = 'reply-$id'") == 1 ]]; then
+    echo "     unconfirmed, but the helpdesk has it: marking delivered"
+    curl -s -o /dev/null "${AUTH[@]}" -X POST "$BASE/tickets/$id/delivered"
+  else
+    echo "     unconfirmed and not in the helpdesk: resending"
+    curl -s -o /dev/null "${AUTH[@]}" -X POST "$BASE/tickets/$id/resend"
+  fi
 done
-[[ $s == sent ]] || fail "not delivered after 3 resends"
-ok "5 sent (attempts: $(sql "SELECT attempts FROM tickets WHERE id = $id"))"
+wait_status 30 sent
+ok "5 sent"
 
-# 6. the helpdesk shows the customer exactly one reply
-[[ $(sql "SELECT count(*) FROM mock_replies WHERE idempotency_key = 'reply-$id'") == 1 ]] || fail "customer got more than one reply"
-ok "6 customer sees one reply (deliveries: $(sql "SELECT deliveries FROM mock_replies WHERE idempotency_key = 'reply-$id'"))"
+# 6. the reply reached the helpdesk exactly once: any automatic resend of a landed reply would make it 2
+deliveries=$(sql "SELECT deliveries FROM mock_replies WHERE idempotency_key = 'reply-$id'")
+[[ $deliveries == 1 ]] || fail "helpdesk received the reply ${deliveries:-0} times"
+ok "6 helpdesk received the reply exactly once"
 
 echo "e2e passed"

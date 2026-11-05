@@ -1,7 +1,6 @@
 from contextlib import asynccontextmanager
 from html import escape
 from pathlib import Path
-from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
@@ -9,7 +8,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field, HttpUrl, field_validator
 
 from app import db, kb, mock_helpdesk, settings
-from app.auth import operator_auth
+from app.auth import operator_auth, same_origin
 
 templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
 
@@ -44,10 +43,15 @@ class HelpdeskEvent(BaseModel):
     @field_validator("reply_url")
     @classmethod
     def known_helpdesk_host(cls, url: HttpUrl) -> HttpUrl:
-        # the worker POSTs here after approval; any host would let a forged webhook aim it at internal services
-        if url.host not in settings.REPLY_URL_HOSTS:
-            raise ValueError(f"reply_url host {url.host!r} is not in REPLY_URL_HOSTS")
-        return url
+        # The worker POSTs here after approval: a forged webhook must not aim it at internal services or at our
+        # own operator endpoints. HttpUrl has already lowercased the host and resolved '..' in the path.
+        # Self hosts first: listing one in REPLY_URL_HOSTS must not open the operator endpoints.
+        if url.host in settings.SELF_HOSTS:
+            if (url.path or "").startswith("/mock-helpdesk/"):
+                return url
+        elif url.host in settings.REPLY_URL_HOSTS:
+            return url
+        raise ValueError(f"reply_url {url} is not a helpdesk address (REPLY_URL_HOSTS)")
 
 
 @app.get("/health", response_class=PlainTextResponse)
@@ -81,13 +85,15 @@ async def operator_page(request: Request):
     return templates.TemplateResponse(request, "operator.html", {"tickets": tickets})
 
 
-@app.post("/tickets/{ticket_id}/{action}", dependencies=[Depends(operator_auth)])
-async def operator_action(ticket_id: int, action: Literal["approve", "reject", "resend", "delivered"]):
+@app.post("/tickets/{ticket_id}/{action}", dependencies=[Depends(operator_auth), Depends(same_origin)])
+async def operator_action(ticket_id: int, action: str):
+    if action not in TRANSITIONS:
+        raise HTTPException(404)
     current, new = TRANSITIONS[action]
     async with db.pool.connection() as conn:
         await conn.execute(
-            "UPDATE tickets SET status = %s, attempts = 0, next_attempt_at = now(), updated_at = now() "
-            "WHERE id = %s AND status = %s",
+            "UPDATE tickets SET status = %s, attempts = 0, next_attempt_at = now(), last_error = NULL, "
+            "updated_at = now() WHERE id = %s AND status = %s",
             [new, ticket_id, current],
         )
     return RedirectResponse("/", status_code=303)

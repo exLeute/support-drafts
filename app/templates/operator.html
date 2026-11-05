@@ -34,7 +34,7 @@
       <form method="post" action="/tickets/{{ t.id }}/approve"><button>Підтвердити</button></form>
       <form method="post" action="/tickets/{{ t.id }}/reject"><button>Відхилити</button></form>
       {% elif t.status == 'unconfirmed' %}
-      <small>Хелпдеск не відповів вчасно. Перевірте, чи дійшла відповідь до {{ t.reply_url }}</small><br>
+      <small>Невідомо, чи дійшла відповідь ({{ t.last_error }}). Перевірте в хелпдеску: {{ t.reply_url }}</small><br>
       <form method="post" action="/tickets/{{ t.id }}/delivered"><button>Дійшла</button></form>
       <form method="post" action="/tickets/{{ t.id }}/resend"><button>Не дійшла, надіслати ще раз</button></form>
       {% endif %}

@@ -19,9 +19,9 @@ Product requirements and the decisions behind them are in README.md ("Вимог
 - Every LLM request goes through `llm.acquire_slot()`. Keep SDK `max_retries=0` so retries are counted too.
 - Without `ANTHROPIC_API_KEY` the real request is still sent; only the answer is replaced by `STATIC_REPLY` after 5–30 s.
 - Sends carry `Idempotency-Key: reply-<tickets.id>`; it must stay stable across retries.
-- A send that may have landed (timeout, dropped connection after the request left) is never resent automatically: it goes to `unconfirmed` and the operator decides. Only "never connected" errors and 5xx are retried.
-- `reply_url` host must be in `settings.REPLY_URL_HOSTS` (checked in the webhook). Don't make the HTTP client follow redirects.
-- Everything that shows customer data (operator UI, mock reply list) is behind `auth.operator_auth`.
+- A send is retried automatically only when the reply surely did not land: `worker.send` raises `RetryableSend` for "never connected", 5xx and 429. Everything else on the send path (timeout, dropped connection, other 4xx, our DB failing after the POST, a worker dying mid-send) goes to `unconfirmed` and the operator decides. Never widen `RetryableSend`.
+- `reply_url` must be a `REPLY_URL_HOSTS` host, or our own host (`SELF_HOSTS`) under `/mock-helpdesk/` only (checked in the webhook). Don't make the HTTP client follow redirects.
+- Everything that shows customer data (operator UI, mock reply list) is behind `auth.operator_auth`; operator POST actions also need `auth.same_origin` (CSRF).
 - Queue state lives only in Postgres (leases via `locked_until`). No in-process queues.
 
 ## Conventions

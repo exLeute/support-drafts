@@ -13,10 +13,13 @@ MAX_ATTEMPTS = int(os.environ.get("MAX_ATTEMPTS", "8"))
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")
 OPERATOR_PASSWORD = os.environ.get("OPERATOR_PASSWORD", "")
 
-# Hosts the worker may POST replies to. The service's own host is always allowed: the mock helpdesk lives there.
+# Helpdesk hosts the worker may POST replies to, any path.
 REPLY_URL_HOSTS = {
-    h.strip() for h in os.environ.get("REPLY_URL_HOSTS", "app,helpdesk.example.com").split(",") if h.strip()
-} | {urlsplit(PUBLIC_BASE_URL).hostname}
+    h.strip().lower() for h in os.environ.get("REPLY_URL_HOSTS", "helpdesk.example.com").split(",") if h.strip()
+}
+# The service itself (compose name, public host). It serves the operator UI too, so replies may go here
+# only to the mock helpdesk's paths.
+SELF_HOSTS = {"app", urlsplit(PUBLIC_BASE_URL).hostname}
 
 MOCK_FAIL_RATE = float(os.environ.get("MOCK_FAIL_RATE", "0.2"))
 MOCK_SLOW_RATE = float(os.environ.get("MOCK_SLOW_RATE", "0.1"))
