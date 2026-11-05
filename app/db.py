@@ -7,7 +7,8 @@ from app import settings
 
 SCHEMA = (Path(__file__).parent / "schema.sql").read_text()
 
-pool = AsyncConnectionPool(settings.DATABASE_URL, open=False, kwargs={"row_factory": dict_row})
+# The default pool (4 connections) queues a webhook burst past the helpdesk's 2 s timeout.
+pool = AsyncConnectionPool(settings.DATABASE_URL, open=False, min_size=2, max_size=20, kwargs={"row_factory": dict_row})
 
 
 async def init() -> None:
