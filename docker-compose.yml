@@ -39,9 +39,13 @@ services:
     <<: *app
     profiles: [test]
     restart: "no"
-    command: ["pytest", "-q"]
+    # runs against the working tree (no rebuild); writes nothing into it, since the container is root
+    command: ["pytest", "-q", "-p", "no:cacheprovider"]
+    volumes:
+      - .:/srv
     environment:
       DATABASE_URL: postgresql://postgres:postgres@db:5432/support_test
+      PYTHONDONTWRITEBYTECODE: "1"
 
 volumes:
   pgdata:

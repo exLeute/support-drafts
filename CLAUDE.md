@@ -30,7 +30,14 @@ Product requirements and the decisions behind them are in README.md ("Вимог
 - UI is server-rendered Jinja (autoescaped). Keep it plain.
 - Comments explain why, not what. A known limit gets `# shortcut: <limit>, <when to upgrade>`.
 
+## Workflow
+- Behaviour change starts in `docs/spec.md`: add or edit the requirement and its acceptance criterion, then code, then the proof (test or `scripts/e2e.sh` step).
+- Done means `/verify` passed (stack, tests, e2e). The Stop hook blocks finishing with failing tests.
+- Before committing, run the `reviewer` subagent on the diff and fix or answer every finding.
+- Measure before claiming a performance fix; record the numbers in README.
+
 ## Commands
 - Run: `docker compose up --build`
 - Tests: `docker compose run --rm test` (uses the `support_test` DB; tests truncate tables and refuse any other DB)
+- E2E on the running stack: `scripts/e2e.sh`
 - Without Docker: `DATABASE_URL=postgresql://...  uvicorn app.main:app` and `python -m app.worker`

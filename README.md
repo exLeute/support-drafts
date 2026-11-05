@@ -55,6 +55,12 @@ docker compose up --build
 docker compose run --rm test
 ```
 
+Сценарій із розділу вище як скрипт (на запущеному стеку, ~30 с):
+
+```bash
+scripts/e2e.sh
+```
+
 Тести працюють з окремою базою `support_test`, яку створює `docker/create-test-db.sql` при першому старті Postgres. Якщо том `pgdata` уже існував до цього, виконайте `docker compose down -v` (це видалить дані).
 
 Що перевіряють тести:
@@ -158,4 +164,8 @@ new/approved ──(MAX_ATTEMPTS невдалих спроб)──────�
 
 ## Робота з AI
 
-Сервіс написано разом із Claude Code. Правила й інваріанти проєкту для агента лежать у [CLAUDE.md](CLAUDE.md). Історію комітів залишено як є.
+Сервіс написано в Claude Code, історію комітів залишено як є.
+- [docs/ai-workflow.md](docs/ai-workflow.md) — як велася робота і де вивід агента перевіряли й виправляли.
+- [docs/spec.md](docs/spec.md) — вимоги з ідентифікаторами, критеріями приймання і доказами (тест, крок e2e або замір).
+- [CLAUDE.md](CLAUDE.md) (він же [AGENTS.md](AGENTS.md) для Codex і Cursor) — карта коду, інваріанти, конвенції.
+- [.claude/](.claude/) — скіл `/verify`, субагент `reviewer`, дозволи і Stop-хук, який не дає агенту завершити хід із червоними тестами.
