@@ -1,0 +1,47 @@
+x-app: &app
+  build: .
+  image: support-drafts
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    DATABASE_URL: postgresql://postgres:postgres@db:5432/support
+  depends_on:
+    db:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: support
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/create-test-db.sql:/docker-entrypoint-initdb.d/create-test-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d support"]
+      interval: 2s
+      retries: 30
+
+  app:
+    <<: *app
+    ports:
+      - "8000:8000"
+
+  worker:
+    <<: *app
+    command: ["python", "-m", "app.worker"]
+
+  # docker compose run --rm test
+  test:
+    <<: *app
+    profiles: [test]
+    restart: "no"
+    command: ["pytest", "-q"]
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/support_test
+
+volumes:
+  pgdata:
