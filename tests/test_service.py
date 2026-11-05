@@ -3,6 +3,7 @@ import time
 
 import httpx
 import pytest
+from anthropic.types.beta import BetaMessage
 
 from app import db, kb, llm, settings, worker
 from app.main import app
@@ -74,3 +75,52 @@ async def test_retried_send_reaches_the_customer_once(clean, monkeypatch):
     [reply] = await fetchall("SELECT * FROM mock_replies")
     assert reply["deliveries"] == 2 and reply["message"] == "Відповідь"
     assert [t["status"] for t in await fetchall("SELECT status FROM tickets")] == ["sent"]
+
+
+def fake_claude(monkeypatch, stop_reason: str, content: list[dict]) -> list[dict]:
+    """Pretend an API key is set and make Claude answer with a real SDK message object."""
+    calls = []
+
+    async def create(**kwargs):
+        calls.append(kwargs)
+        return BetaMessage.model_validate({
+            "id": "msg_test", "type": "message", "role": "assistant", "model": kwargs["model"],
+            "stop_reason": stop_reason, "stop_sequence": None,
+            "usage": {"input_tokens": 1, "output_tokens": 1}, "content": content,
+        })
+
+    monkeypatch.setattr(settings, "ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(llm.client.beta.messages, "create", create)
+    return calls
+
+
+async def draft_once() -> dict:
+    async with client() as c:
+        await c.post("/webhooks/helpdesk", json=EVENT)
+    await worker.handle(await worker.claim(), http=None)
+    [ticket] = await fetchall("SELECT * FROM tickets")
+    return ticket
+
+
+async def test_claude_reply_becomes_a_draft_with_kb_links(clean, monkeypatch):
+    calls = fake_claude(monkeypatch, "end_turn", [
+        {"type": "thinking", "thinking": "", "signature": "sig"},
+        {"type": "text", "text": "Відкрийте звіт і натисніть «Експорт»."},
+    ])
+    ticket = await draft_once()
+    assert ticket["status"] == "draft"
+    assert ticket["draft"].startswith("Відкрийте звіт і натисніть «Експорт».\n\nКорисні статті:")
+    assert "/kb/export-pdf" in ticket["draft"]
+    [call] = calls
+    assert call["fallbacks"] == "default"
+    assert EVENT["message"] in call["messages"][0]["content"]
+    assert "Як експортувати звіт у PDF" in call["messages"][0]["content"]
+
+
+@pytest.mark.parametrize("stop_reason, content", [("refusal", []), ("end_turn", [])])
+async def test_refused_or_empty_reply_is_retried_not_saved(clean, monkeypatch, stop_reason, content):
+    fake_claude(monkeypatch, stop_reason, content)
+    ticket = await draft_once()
+    assert ticket["status"] == "new" and ticket["draft"] is None
+    assert ticket["last_error"] and ticket["locked_until"] is None
+    assert ticket["next_attempt_at"] > ticket["created_at"]
