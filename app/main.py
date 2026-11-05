@@ -1,10 +1,27 @@
+import secrets
 from contextlib import asynccontextmanager
+from html import escape
+from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.responses import PlainTextResponse
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field, HttpUrl
 
-from app import db, mock_helpdesk
+from app import db, kb, mock_helpdesk, settings
+
+templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
+basic = HTTPBasic(auto_error=False)
+
+
+def operator_auth(credentials: HTTPBasicCredentials | None = Depends(basic)) -> None:
+    if not settings.OPERATOR_PASSWORD:
+        return
+    if credentials is None or not secrets.compare_digest(
+        credentials.password.encode(), settings.OPERATOR_PASSWORD.encode()
+    ):
+        raise HTTPException(401, headers={"WWW-Authenticate": "Basic"})
 
 
 @asynccontextmanager
@@ -43,3 +60,49 @@ async def helpdesk_webhook(event: HelpdeskEvent):
         )
         created = await cur.fetchone() is not None
     return {"status": "accepted" if created else "duplicate"}
+
+
+@app.get("/", response_class=HTMLResponse, dependencies=[Depends(operator_auth)])
+async def operator_page(request: Request):
+    async with db.pool.connection() as conn:
+        # shortcut: last 200 tickets, no pagination or filters; add them when operators work through real volume
+        cur = await conn.execute(
+            "SELECT *, coalesce(locked_until > now(), false) AS busy FROM tickets "
+            "ORDER BY status = 'draft' DESC, id DESC LIMIT 200"
+        )
+        tickets = await cur.fetchall()
+    return templates.TemplateResponse(request, "operator.html", {"tickets": tickets})
+
+
+# Both transitions only fire from 'draft', so a double click or two operators cannot queue a second send.
+@app.post("/tickets/{ticket_id}/approve", dependencies=[Depends(operator_auth)])
+async def approve(ticket_id: int):
+    async with db.pool.connection() as conn:
+        await conn.execute(
+            "UPDATE tickets SET status = 'approved', attempts = 0, next_attempt_at = now(), updated_at = now() "
+            "WHERE id = %s AND status = 'draft'",
+            [ticket_id],
+        )
+    return RedirectResponse("/", status_code=303)
+
+
+@app.post("/tickets/{ticket_id}/reject", dependencies=[Depends(operator_auth)])
+async def reject(ticket_id: int):
+    async with db.pool.connection() as conn:
+        await conn.execute(
+            "UPDATE tickets SET status = 'rejected', updated_at = now() WHERE id = %s AND status = 'draft'",
+            [ticket_id],
+        )
+    return RedirectResponse("/", status_code=303)
+
+
+@app.get("/kb/{slug}", response_class=HTMLResponse)
+async def article(slug: str):
+    a = kb.BY_SLUG.get(slug)
+    if a is None:
+        raise HTTPException(404)
+    return (
+        f"<!doctype html><meta charset=utf-8><title>{escape(a['title'])}</title>"
+        f"<h1>{escape(a['title'])}</h1><pre style='white-space:pre-wrap;font:16px sans-serif;max-width:48em'>"
+        f"{escape(a['body'])}</pre>"
+    )

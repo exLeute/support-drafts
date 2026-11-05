@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Звернення</title>
+<style>
+  body { font: 14px sans-serif; margin: 16px; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { border: 1px solid #ccc; padding: 6px; vertical-align: top; text-align: left; }
+  .text { white-space: pre-wrap; max-width: 40em; }
+  .error { color: #b00; }
+  form { display: inline; }
+</style>
+</head>
+<body>
+<h1>Звернення</h1>
+<p><a href="/">Оновити</a> · <a href="/mock-helpdesk/replies">Що отримав мок хелпдеску</a> · <a href="/docs">API</a></p>
+<table>
+  <tr><th>#</th><th>Звернення</th><th>Повідомлення клієнта</th><th>Чернетка</th><th>Статус</th><th>Дії</th></tr>
+  {% for t in tickets %}
+  <tr>
+    <td>{{ t.id }}</td>
+    <td>{{ t.ticket_id }}<br>{{ t.customer_email }}<br><small>{{ t.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</small></td>
+    <td class="text">{{ t.message }}</td>
+    <td class="text">{{ t.draft or ('генерується…' if t.status == 'new' else '') }}</td>
+    <td>
+      {{ t.status }}{% if t.busy %} (в обробці){% endif %}
+      {% if t.attempts %}<br><small>спроба {{ t.attempts }}</small>{% endif %}
+      {% if t.last_error %}<br><small class="error">{{ t.last_error }}</small>{% endif %}
+    </td>
+    <td>
+      {% if t.status == 'draft' %}
+      <form method="post" action="/tickets/{{ t.id }}/approve"><button>Підтвердити</button></form>
+      <form method="post" action="/tickets/{{ t.id }}/reject"><button>Відхилити</button></form>
+      {% endif %}
+    </td>
+  </tr>
+  {% else %}
+  <tr><td colspan="6">Звернень поки немає.</td></tr>
+  {% endfor %}
+</table>
+</body>
+</html>
