@@ -4,6 +4,31 @@
 
 Стек: Python 3.13, FastAPI, PostgreSQL 17, Anthropic SDK, Jinja2. Черга задач, лімітер запитів до LLM і дедуплікація зроблені на Postgres, без Redis чи Celery.
 
+## Публічне розгортання
+
+Сервіс розгорнуто на Railway:
+
+| Що | Адреса |
+|---|---|
+| Інтерфейс оператора (пароль у супровідному листі, логін будь-який) | https://support-drafts-production.up.railway.app/ |
+| Вебхук | `POST https://support-drafts-production.up.railway.app/webhooks/helpdesk` |
+| Health check | https://support-drafts-production.up.railway.app/health |
+| Що отримав мок хелпдеску | https://support-drafts-production.up.railway.app/mock-helpdesk/replies |
+
+Звернення для перевірки (`reply_url` веде на мок на тому самому домені):
+
+```bash
+curl -X POST https://support-drafts-production.up.railway.app/webhooks/helpdesk -H 'Content-Type: application/json' -d '{
+  "event_id": "evt_demo_1",
+  "ticket_id": "T-1042",
+  "customer_email": "user@example.com",
+  "message": "Не можу експортувати звіт у PDF",
+  "reply_url": "https://support-drafts-production.up.railway.app/mock-helpdesk/tickets/T-1042/replies"
+}'
+```
+
+Кожен `event_id` приймається один раз, тож для нового звернення змініть його.
+
 ## Запуск
 
 Потрібні Docker і Docker Compose.
@@ -139,10 +164,11 @@ new/approved ──(MAX_ATTEMPTS невдалих спроб)──────�
 
 ## Деплой
 
-Будь-який хостинг, що вміє запускати Docker і має керований Postgres (Render, Railway, Fly.io):
-- web-сервіс: образ з `Dockerfile`, команда за замовчуванням, порт береться з `$PORT`;
-- worker-сервіс: той самий образ з командою `python -m app.worker`;
-- змінні: `DATABASE_URL`, `PUBLIC_BASE_URL=https://<домен>`, `OPERATOR_PASSWORD`, за бажанням `ANTHROPIC_API_KEY`.
+Розгорнуто на Railway з GitHub-репозиторію. Так само підійде будь-який хостинг, що вміє запускати Docker і має керований Postgres:
+- PostgreSQL: керована база Railway;
+- сервіс `app`: образ з `Dockerfile`, команда за замовчуванням, публічний домен на порт 8000; змінні `DATABASE_URL=${{Postgres.DATABASE_URL}}`, `PUBLIC_BASE_URL=https://<домен>` (зі схемою), `OPERATOR_PASSWORD`, `PORT=8000`;
+- сервіс `worker`: той самий репозиторій, команда запуску `python -m app.worker`, без домену; змінні `DATABASE_URL` і `PUBLIC_BASE_URL`;
+- за бажанням `ANTHROPIC_API_KEY` сервісу `worker` (LLM викликає лише він). Без ключа працює режим статичних відповідей.
 
 Для тесту на задеплоєному сервісі в `reply_url` вказуйте `https://<домен>/mock-helpdesk/tickets/<id>/replies`. Для справжнього хелпдеску додайте його домен у `REPLY_URL_HOSTS`.
 
