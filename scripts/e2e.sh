@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # End-to-end check of the running compose stack: webhook -> draft -> approve -> delivered once.
 # Usage: docker compose up -d && scripts/e2e.sh   (OPERATOR_PASSWORD=... if the UI is protected)
-# Step numbers match the "e2e: крок N" references in docs/spec.md.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

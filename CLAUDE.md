@@ -31,10 +31,9 @@ Product requirements and the decisions behind them are in README.md ("Вимог
 - Comments explain why, not what. A known limit gets `# shortcut: <limit>, <when to upgrade>`.
 
 ## Workflow
-- Behaviour change starts in `docs/spec.md`: add or edit the requirement and its acceptance criterion, then code, then the proof (test or `scripts/e2e.sh` step).
-- Done means `/verify` passed (stack, tests, e2e). The Stop hook blocks finishing with failing tests.
+- A behaviour change comes with a test, and the README table is updated.
+- Done means `docker compose up -d --build`, the tests and `scripts/e2e.sh` all passed.
 - Before committing, run the `reviewer` subagent on the diff and fix or answer every finding.
-- Measure before claiming a performance fix; record the numbers in README.
 
 ## Commands
 - Run: `docker compose up --build`
